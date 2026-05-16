@@ -1,0 +1,839 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  LayoutDashboard, Coffee, Users, FileText, CheckCircle2, AlertTriangle, 
+  Save, CupSoda, TrendingUp, Lock, LogOut, Edit2, PlusCircle, Printer,
+  Calculator, ArrowDownRight, Trash2
+} from 'lucide-react';
+
+// --- DATA DEFAULT ---
+const DEFAULT_EMPLOYEES = [
+  { id: 1, name: 'Andi', attendance: null, kasbon: 0 },
+  { id: 2, name: 'Budi', attendance: null, kasbon: 0 },
+  { id: 3, name: 'Citra', attendance: null, kasbon: 0 },
+  { id: 4, name: 'Dewi', attendance: null, kasbon: 0 },
+];
+
+const DEFAULT_CUP_SIZES = ['700ml', '500ml', '400ml'];
+const DAILY_WAGE = 50000;
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwLiuBquZKm2W_d_imCnxelZzxpetvCigbocCFO5fKteehMcLLCyo29-VPs5odQw1svYg/exec';
+
+const safeTrim = (str) => (str || '').toString().trim();
+
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userRole, setUserRole] = useState(null);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [activeTab, setActiveTab] = useState('input');
+  
+  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
+  const [cupSizes, setCupSizes] = useState(DEFAULT_CUP_SIZES);
+  const [inventory, setInventory] = useState({});
+  
+  // --- STATE KEUANGAN MANUAL ---
+  const [omset, setOmset] = useState('');
+  const [hpp, setHpp] = useState('');
+  const [pengeluaranLain, setPengeluaranLain] = useState('');
+  const [keteranganLain, setKeteranganLain] = useState('');
+
+  const [isEmpModalOpen, setIsEmpModalOpen] = useState(false);
+  const [editingEmp, setEditingEmp] = useState(null);
+
+  const [isCupModalOpen, setIsCupModalOpen] = useState(false);
+  const [newCupSize, setNewCupSize] = useState('');
+
+  const [confirmDialog, setConfirmDialog] = useState({ show: false, message: '', onConfirm: null });
+  const [notification, setNotification] = useState({ show: false, message: '', type: 'success' });
+  const [isSaving, setIsSaving] = useState(false);
+
+  // --- CALCULATIONS ---
+  const valOmset = Number(omset) || 0;
+  const valHpp = Number(hpp) || 0;
+  const valLain = Number(pengeluaranLain) || 0;
+
+  const presentEmployees = employees.filter(e => e.attendance === 'hadir').length;
+  
+  // Gaji Karyawan = (Hadir ? 50rb : 0) - Kasbon
+  const totalSalary = employees.reduce((sum, emp) => {
+    let daily = emp.attendance === 'hadir' ? DAILY_WAGE : 0;
+    let kasbon = Number(emp.kasbon) || 0;
+    return sum + (daily - kasbon);
+  }, 0);
+  
+  const totalKasbon = employees.reduce((sum, emp) => sum + (Number(emp.kasbon) || 0), 0);
+  const totalPengeluaran = valHpp + totalSalary + valLain;
+  const netProfit = valOmset - totalPengeluaran;
+
+  const inventoryStatus = cupSizes.map(size => {
+    const start = parseInt(inventory[size]?.startCups) || 0;
+    const end = parseInt(inventory[size]?.endCups) || 0;
+    const sold = parseInt(inventory[size]?.soldCups) || 0;
+    const expectedEnd = start - sold;
+    const diff = end - expectedEnd;
+    return { size, start, end, sold, expectedEnd, diff };
+  });
+
+  const cupsSold = inventoryStatus.reduce((sum, stat) => sum + stat.sold, 0);
+  const totalCupLoss = inventoryStatus.reduce((sum, stat) => sum + (stat.diff < 0 ? Math.abs(stat.diff) : 0), 0);
+
+  // --- HANDLERS ---
+  const showNotif = (message, type = 'success') => {
+    setNotification({ show: true, message, type });
+    setTimeout(() => setNotification({ show: false, message: '', type: 'success' }), 4000);
+  };
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    
+    fetch(SCRIPT_URL)
+      .then(res => res.json())
+      .then(data => {
+        setIsLoggingIn(false);
+        if(data.status === 'success') {
+          const validUser = data.users.find(u => u.username === loginForm.username && u.password === loginForm.password);
+          if(validUser) {
+            setUserRole(validUser.role);
+            if (data.employees && data.employees.length > 0) {
+              setEmployees(data.employees.map(emp => ({ ...emp, attendance: null, kasbon: 0 })));
+            }
+            if (data.cups && data.cups.length > 0) setCupSizes(data.cups);
+
+            setIsLoggedIn(true);
+            setActiveTab(validUser.role === 'admin' ? 'dashboard' : 'input');
+            showNotif(`Selamat datang, ${validUser.username}! 👑`, 'success');
+          } else {
+            showNotif('Username atau Password salah!', 'error');
+          }
+        } else {
+          showNotif('Gagal membaca data server!', 'error');
+        }
+      })
+      .catch(err => {
+        setIsLoggingIn(false);
+        showNotif('Koneksi internet gagal!', 'error');
+      });
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false); setUserRole(null); setLoginForm({ username: '', password: '' });
+  };
+
+  const syncMasterData = (newEmps, newCups) => {
+    fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'save_master', employees: newEmps, cups: newCups })
+    }).then(res => res.json()).then(data => {
+      if(data.status === 'success') showNotif('Database Pusat Terupdate! ☁️', 'success');
+    }).catch(err => console.error('Gagal sync background:', err));
+  };
+
+  const handleSaveEmp = (e) => {
+    e.preventDefault();
+    let updatedEmps;
+    if (editingEmp.id) {
+      updatedEmps = employees.map(emp => emp.id === editingEmp.id ? editingEmp : emp);
+    } else {
+      updatedEmps = [...employees, { ...editingEmp, id: Date.now(), attendance: null, kasbon: 0 }];
+    }
+    setEmployees(updatedEmps);
+    setIsEmpModalOpen(false);
+    setEditingEmp(null);
+    syncMasterData(updatedEmps, cupSizes);
+  };
+
+  const handleDeleteEmp = (id) => {
+    const updated = employees.filter(emp => emp.id !== id);
+    setEmployees(updated);
+    syncMasterData(updated, cupSizes);
+  };
+
+  const handleAddCupSize = (e) => {
+    e.preventDefault();
+    if (newCupSize && !cupSizes.includes(newCupSize)) {
+      const updatedCups = [...cupSizes, newCupSize];
+      setCupSizes(updatedCups);
+      syncMasterData(employees, updatedCups);
+      setNewCupSize('');
+      setIsCupModalOpen(false);
+      showNotif(`Cup ${newCupSize} berhasil ditambahkan!`, 'success');
+    } else {
+      showNotif('Ukuran cup sudah ada atau kosong!', 'error');
+    }
+  };
+
+  const handleDeleteCup = (size) => {
+    const updatedCups = cupSizes.filter(c => c !== size);
+    setCupSizes(updatedCups);
+    syncMasterData(employees, updatedCups);
+  };
+
+  const handleAttendanceChange = (id, status) => {
+    setEmployees(prev => prev.map(e => e.id === id ? { ...e, attendance: status } : e));
+  };
+  
+  const handleKasbonChange = (id, value) => {
+    setEmployees(prev => prev.map(e => e.id === id ? { ...e, kasbon: value } : e));
+  };
+
+  const handleInventoryChange = (size, field, value) => {
+    setInventory(prev => ({
+      ...prev,
+      [size]: {
+        ...(prev[size] || { startCups: '', endCups: '', soldCups: '' }),
+        [field]: value
+      }
+    }));
+  };
+
+  const handleSaveData = () => {
+    setIsSaving(true);
+    fetch(SCRIPT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'save_all', 
+        date: new Date().toLocaleDateString(),
+        revenue: valOmset, 
+        cogs: valHpp, 
+        salary: totalSalary,
+        otherExpense: valLain,
+        noteExpense: keteranganLain, 
+        profit: netProfit,
+        cupsSold: cupsSold, 
+        cupLoss: totalCupLoss, 
+        attendance: employees.map(emp => ({
+          name: emp.name,
+          status: emp.attendance === 'hadir' ? 'Hadir' : (emp.attendance === 'absen' ? 'Absen' : 'Belum Absen'),
+          kasbon: emp.kasbon
+        })), 
+        inventoryStatus: inventoryStatus
+      })
+    }).then(res => res.json()).then(data => {
+      setIsSaving(false);
+      showNotif('✨ DATA BERHASIL DISIMPAN KE SPREADSHEET! 🚀🎉', 'success');
+      // Jangan reset form agar user masih bisa print / lihat datanya,
+      // User bisa clear manual jika perlu.
+    }).catch(err => {
+      setIsSaving(false); showNotif('Gagal mengirim ke Server', 'error');
+    });
+  };
+
+  const handlePrint = () => {
+    // Cek apakah aplikasi sedang berjalan di dalam Iframe (Preview layar ini)
+    if (window.self !== window.top) {
+      showNotif('Fitur Cetak diblokir pada layar pratinjau ini. Fitur ini akan 100% berfungsi saat file HTML dibuka langsung atau diupload ke GitHub.', 'warning');
+    }
+    
+    try {
+      window.print();
+    } catch (e) {
+      showNotif('Gagal mencetak. Silakan gunakan Ctrl+P (Windows) / Cmd+P (Mac).', 'error');
+    }
+  };
+
+  const TABS = [
+    { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['admin', 'employee'] },
+    { id: 'input', icon: Calculator, label: 'Input Kas', roles: ['admin', 'employee'] },
+    { id: 'inventory', icon: CupSoda, label: 'Stok Cup', roles: ['admin', 'employee'] },
+    { id: 'hr', icon: Users, label: 'Karyawan', roles: ['admin'] },
+    { id: 'reports', icon: FileText, label: 'Laporan', roles: ['admin'] }
+  ];
+
+  const visibleTabs = TABS.filter(tab => tab.roles.includes(userRole));
+
+  // --- REUSABLE SAVE BUTTON COMPONENT ---
+  const SaveButton = () => (
+    <div className="mt-8 pt-6 border-t border-gray-200 flex justify-center no-print">
+      <button onClick={handleSaveData} disabled={isSaving} className={`w-full md:w-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-black text-xl text-white shadow-xl transition-all transform active:scale-95 ${isSaving ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:shadow-2xl hover:-translate-y-1 animate-gradient-x'}`}>
+        {isSaving ? <div className="w-6 h-6 border-4 rounded-full animate-spin border-white/30 border-t-white" /> : <Save size={24} />} 
+        {isSaving ? 'MENYIMPAN...' : 'SIMPAN DATA KE SPREADSHEET'}
+      </button>
+    </div>
+  );
+
+  const renderLogin = () => (
+    <div className="min-h-screen bg-gradient-to-br from-blue-600 via-purple-600 to-indigo-800 flex items-center justify-center p-4">
+      <div className="bg-white/95 backdrop-blur-xl p-8 rounded-3xl shadow-2xl w-full max-w-md animate-bounce-in">
+        <div className="text-center mb-8">
+          <div className="inline-block bg-purple-100 p-4 rounded-full mb-4">
+            <Lock size={40} className="text-purple-600" />
+          </div>
+          <h1 className="text-3xl font-black text-gray-800">Login Sticky Point</h1>
+        </div>
+        <form onSubmit={handleLogin} className="space-y-5">
+          <div>
+            <label className="block text-gray-700 font-bold mb-2">Username</label>
+            <input type="text" required value={loginForm.username} onChange={(e) => setLoginForm({...loginForm, username: e.target.value})} className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl outline-none focus:border-blue-500" placeholder="Masukkan username"/>
+          </div>
+          <div>
+            <label className="block text-gray-700 font-bold mb-2">Password</label>
+            <input type="password" required value={loginForm.password} onChange={(e) => setLoginForm({...loginForm, password: e.target.value})} className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl outline-none focus:border-blue-500" placeholder="••••••••"/>
+          </div>
+          <button type="submit" disabled={isLoggingIn} className={`w-full py-4 text-white rounded-2xl font-black text-xl mt-4 ${isLoggingIn ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-purple-600 hover:shadow-xl'}`}>
+            {isLoggingIn ? 'MEMERIKSA DATA...' : 'MASUK'}
+          </button>
+        </form>
+      </div>
+      {notification.show && (
+        <div className="fixed top-10 left-1/2 transform -translate-x-1/2 z-50 animate-bounce-in">
+          <div className={`px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 font-bold text-lg border-2 bg-white ${notification.type === 'success' ? 'text-green-600 border-green-400' : 'text-red-600 border-red-400'}`}>
+            {notification.type === 'success' ? <CheckCircle2 size={28} /> : <AlertTriangle size={28} />} {notification.message}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderDashboard = () => {
+    // Mock data untuk demo grafik
+    const mockHistoricalSales = [
+      { day: 'H-6', val: 450000, color: 'bg-indigo-400' },
+      { day: 'H-5', val: 520000, color: 'bg-indigo-400' },
+      { day: 'H-4', val: 380000, color: 'bg-indigo-400' },
+      { day: 'H-3', val: 610000, color: 'bg-indigo-400' },
+      { day: 'H-2', val: 590000, color: 'bg-indigo-400' },
+      { day: 'Kemarin', val: 800000, color: 'bg-indigo-500' },
+      { day: 'Hari Ini', val: valOmset, color: 'bg-blue-600' }
+    ];
+    
+    // Setup Y-Axis for Professional Chart
+    const maxVal = Math.max(...mockHistoricalSales.map(h => h.val), 1000000);
+    // Bulatkan ke atas kelipatan terdekat agar rapi (misal kelipatan 250k atau 500k)
+    const roundedMax = Math.ceil(maxVal / 250000) * 250000;
+    const yAxisLabels = [roundedMax, roundedMax * 0.75, roundedMax * 0.5, roundedMax * 0.25, 0];
+
+    return (
+      <div className="space-y-6 animate-fade-in pb-24 lg:pb-0">
+        <h2 className="text-3xl font-extrabold text-gray-800 mb-6 drop-shadow-sm">Dashboard Sticky Point 🌟</h2>
+        
+        {/* KPI Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-white p-6 rounded-3xl shadow-lg border border-gray-100 transform hover:scale-105 transition-transform">
+            <div className="flex items-center justify-between">
+              <div><p className="text-gray-500 font-semibold mb-1">Total Pemasukan</p><h3 className="text-3xl font-bold text-green-600">Rp {valOmset.toLocaleString('id-ID')}</h3></div>
+              <div className="p-4 bg-green-100 rounded-full text-green-600"><TrendingUp size={32} /></div>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-3xl shadow-lg border border-gray-100 transform hover:scale-105 transition-transform">
+            <div className="flex items-center justify-between">
+              <div><p className="text-gray-500 font-semibold mb-1">Total Pengeluaran</p><h3 className="text-3xl font-bold text-red-500">Rp {totalPengeluaran.toLocaleString('id-ID')}</h3></div>
+              <div className="p-4 bg-red-100 rounded-full text-red-500"><ArrowDownRight size={32} /></div>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-3xl shadow-lg border border-gray-100 transform hover:scale-105 transition-transform">
+            <div className="flex items-center justify-between">
+              <div><p className="text-gray-500 font-semibold mb-1">Net Profit Estimasi</p><h3 className={`text-3xl font-bold ${netProfit >= 0 ? 'text-blue-600' : 'text-red-600'}`}>Rp {netProfit.toLocaleString('id-ID')}</h3></div>
+              <div className="p-4 bg-blue-100 rounded-full text-blue-600"><Calculator size={32} /></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+          
+          {/* PROFESSIONAL BAR CHART */}
+          <div className="lg:col-span-2 bg-white p-6 rounded-3xl shadow-lg border border-gray-100">
+            <h3 className="text-xl font-bold text-gray-800 mb-2">Grafik Tren Penjualan</h3>
+            <p className="text-sm text-gray-500 mb-6">Perbandingan Omset 7 Hari Terakhir</p>
+            
+            <div className="relative h-64 mt-4 w-full">
+              {/* Y-Axis Grid Lines */}
+              <div className="absolute inset-0 flex flex-col justify-between text-xs text-gray-400">
+                {yAxisLabels.map((label, idx) => (
+                  <div key={idx} className="flex items-center w-full">
+                    <span className="w-12 text-right mr-3 font-medium">
+                      {label >= 1000000 ? `${(label/1000000).toFixed(1)}M` : `${(label/1000).toFixed(0)}k`}
+                    </span>
+                    <div className="flex-1 border-t border-dashed border-gray-200"></div>
+                  </div>
+                ))}
+              </div>
+              
+              {/* Bar Containers */}
+              <div className="absolute inset-0 left-16 flex items-end justify-around pb-[1px] pt-[6px]">
+                {mockHistoricalSales.map((t, i) => {
+                  const heightPercentage = (t.val / roundedMax) * 100;
+                  return (
+                    <div key={`hist-${i}`} className="relative flex flex-col items-center group w-full h-full justify-end">
+                      {/* Tooltip on Hover */}
+                      <div className="absolute -top-10 opacity-0 group-hover:opacity-100 transition-opacity bg-gray-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xl pointer-events-none whitespace-nowrap z-10">
+                        Rp {t.val.toLocaleString('id-ID')}
+                        {/* Tooltip Arrow */}
+                        <div className="absolute bottom-[-4px] left-1/2 transform -translate-x-1/2 w-2 h-2 bg-gray-800 rotate-45"></div>
+                      </div>
+                      
+                      {/* The Bar */}
+                      <div 
+                        className={`w-8 sm:w-12 ${t.color} rounded-t-md transition-all duration-700 ease-out group-hover:brightness-110 shadow-sm`} 
+                        style={{ height: `${Math.max(heightPercentage, 2)}%` }} // Minimum height to show bar
+                      ></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            
+            {/* X-Axis Labels */}
+            <div className="flex justify-around ml-16 mt-3">
+              {mockHistoricalSales.map((t, i) => (
+                <span key={`xlabel-${i}`} className="text-[10px] sm:text-xs text-gray-500 font-semibold text-center w-full">{t.day}</span>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-3xl shadow-lg border border-gray-100 flex flex-col items-center justify-center">
+            <h3 className="text-xl font-bold text-gray-800 mb-6 w-full text-left border-b pb-2">Status Kehadiran</h3>
+            <div className="relative w-48 h-48 rounded-full shadow-inner flex items-center justify-center"
+                 style={{ background: presentEmployees > 0 ? `conic-gradient(#3b82f6 ${(presentEmployees/employees.length)*360}deg, #e5e7eb 0deg)` : '#e5e7eb' }}>
+              <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center shadow-md flex-col">
+                <span className="text-3xl font-black text-blue-600">{Math.round((presentEmployees/employees.length)*100 || 0)}%</span>
+                <span className="text-xs text-gray-500 font-semibold mt-1">Kehadiran</span>
+              </div>
+            </div>
+            <div className="flex gap-4 mt-8">
+              <div className="flex items-center gap-2"><div className="w-4 h-4 bg-blue-500 rounded-full shadow-sm"></div><span className="text-sm font-bold text-gray-600">Hadir</span></div>
+              <div className="flex items-center gap-2"><div className="w-4 h-4 bg-gray-200 rounded-full shadow-sm"></div><span className="text-sm font-bold text-gray-600">Absen</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderInputKeuangan = () => (
+    <div className="max-w-3xl mx-auto animate-fade-in pb-24 lg:pb-0">
+      <div className="bg-white p-8 rounded-3xl shadow-2xl border border-gray-100 relative">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-blue-100 text-blue-600 rounded-2xl shadow-sm"><Calculator size={32} /></div>
+          <div>
+            <h2 className="text-3xl font-extrabold text-gray-800">Input Arus Kas</h2>
+            <p className="text-gray-500 font-medium">Masukkan total omset dan pengeluaran harian</p>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="bg-green-50 p-6 rounded-2xl border-2 border-green-200">
+            <label className="flex items-center gap-2 font-bold text-green-800 mb-3 text-lg">
+              <TrendingUp size={24} /> Total Pemasukan / Omset
+            </label>
+            <div className="relative">
+              <span className="absolute left-4 top-4 font-black text-gray-500 text-xl">Rp</span>
+              <input 
+                type="number" 
+                value={omset} 
+                onChange={e => setOmset(e.target.value)} 
+                className="w-full pl-14 p-4 bg-white border-2 border-green-300 rounded-xl font-black text-2xl outline-none focus:border-green-500 transition-colors" 
+                placeholder="0" 
+              />
+            </div>
+            <p className="text-sm text-green-600 mt-2 font-medium">*Hitung dan masukkan seluruh pendapatan kotor hari ini.</p>
+          </div>
+
+          <div className="bg-red-50 p-6 rounded-2xl border-2 border-red-200 space-y-5">
+            <h3 className="flex items-center gap-2 font-bold text-red-800 text-lg border-b border-red-200 pb-3">
+              <ArrowDownRight size={24} /> Form Pengeluaran
+            </h3>
+            
+            <div>
+              <label className="block font-bold text-red-800 mb-2">HPP / Belanja Modal Pokok</label>
+              <div className="relative">
+                <span className="absolute left-4 top-3 font-bold text-gray-500 text-lg">Rp</span>
+                <input 
+                  type="number" 
+                  value={hpp} 
+                  onChange={e => setHpp(e.target.value)} 
+                  className="w-full pl-14 p-3 bg-white border-2 border-red-300 rounded-xl font-bold text-xl outline-none focus:border-red-500 transition-colors" 
+                  placeholder="0" 
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-bold text-red-800 mb-2">Pengeluaran Lain-lain (Opsional)</label>
+              <div className="relative mb-3">
+                <span className="absolute left-4 top-3 font-bold text-gray-500 text-lg">Rp</span>
+                <input 
+                  type="number" 
+                  value={pengeluaranLain} 
+                  onChange={e => setPengeluaranLain(e.target.value)} 
+                  className="w-full pl-14 p-3 bg-white border-2 border-red-300 rounded-xl font-bold text-xl outline-none focus:border-red-500 transition-colors" 
+                  placeholder="0" 
+                />
+              </div>
+              <input 
+                type="text" 
+                value={keteranganLain} 
+                onChange={e => setKeteranganLain(e.target.value)} 
+                className="w-full p-3 bg-white border-2 border-red-300 rounded-xl font-medium outline-none focus:border-red-500 transition-colors" 
+                placeholder="Keterangan (Cth: Beli Es Batu, Bensin, Galon)" 
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Tombol Simpan di Tab Input */}
+        <SaveButton />
+      </div>
+    </div>
+  );
+
+  const renderInventory = () => (
+    <div className="max-w-5xl mx-auto animate-fade-in pb-24 lg:pb-0">
+      <div className="bg-white p-8 rounded-3xl shadow-2xl relative overflow-hidden border border-gray-100">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-orange-100 text-orange-600 rounded-2xl shadow-sm"><CupSoda size={32} /></div>
+          <div><h2 className="text-3xl font-extrabold text-gray-800">Input Stok Cup Manual</h2><p className="text-gray-500 font-medium">Input penggunaan dan sisa cup harian</p></div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          {inventoryStatus.map((stat, index) => (
+            <div key={`inv-${stat.size}-${index}`} className="relative bg-gray-50 border-2 border-gray-200 rounded-2xl p-5 hover:border-orange-300 transition-all">
+              {userRole === 'admin' && (
+                <button onClick={() => setConfirmDialog({ show: true, message: `Hapus cup ukuran ${stat.size}?`, onConfirm: () => handleDeleteCup(stat.size) })} className="absolute top-4 right-4 text-gray-400 hover:text-red-500 transition-colors">
+                  <Trash2 size={20} />
+                </button>
+              )}
+              <h3 className="text-xl font-black text-gray-800 mb-4 border-b-2 border-orange-200 pb-2">Cup {stat.size}</h3>
+              <div className="space-y-4 mb-4">
+                <div><label className="block font-bold text-gray-600 text-sm mb-1">Awal Pagi</label><input type="number" value={inventory[stat.size]?.startCups || ''} onChange={(e) => handleInventoryChange(stat.size, 'startCups', e.target.value)} className="w-full p-3 border-2 border-gray-300 rounded-xl outline-none focus:border-orange-500" placeholder="0" /></div>
+                <div><label className="block font-bold text-gray-600 text-sm mb-1">Terjual / Terpakai</label><input type="number" value={inventory[stat.size]?.soldCups || ''} onChange={(e) => handleInventoryChange(stat.size, 'soldCups', e.target.value)} className="w-full p-3 border-2 border-gray-300 rounded-xl outline-none focus:border-orange-500" placeholder="0" /></div>
+                <div><label className="block font-bold text-gray-600 text-sm mb-1">Sisa Malam (Fisik)</label><input type="number" value={inventory[stat.size]?.endCups || ''} onChange={(e) => handleInventoryChange(stat.size, 'endCups', e.target.value)} className="w-full p-3 border-2 border-gray-300 rounded-xl outline-none focus:border-orange-500" placeholder="0" /></div>
+              </div>
+              <div className="pt-4 border-t-2 border-dashed border-gray-300 text-sm">
+                <div className="flex justify-between items-center mb-2"><span className="text-gray-500 font-bold">Estimasi Sisa Sistem</span><span className="font-black text-gray-800 text-lg">{stat.expectedEnd}</span></div>
+                {inventory[stat.size]?.endCups !== '' && inventory[stat.size]?.endCups !== undefined && (
+                  <div className={`p-2 rounded-lg flex justify-center gap-2 font-bold ${stat.diff === 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {stat.diff === 0 ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />} {stat.diff === 0 ? 'Aman / Klop' : `Selisih: ${Math.abs(stat.diff)}`}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {userRole === 'admin' && (
+            <div onClick={() => { setNewCupSize(''); setIsCupModalOpen(true); }} className="border-2 border-dashed border-gray-300 bg-white rounded-2xl p-5 cursor-pointer text-gray-500 hover:text-orange-600 hover:border-orange-500 hover:bg-orange-50 transition-all duration-200 flex flex-col items-center justify-center min-h-[250px]">
+              <PlusCircle size={32} className="mb-2" />
+              <h3 className="font-bold">Tambah Cup Baru</h3>
+            </div>
+          )}
+        </div>
+
+        {/* Tombol Simpan di Tab Stok */}
+        <SaveButton />
+      </div>
+    </div>
+  );
+
+  const renderHR = () => (
+    <div className="max-w-3xl mx-auto animate-fade-in pb-24 lg:pb-0">
+      <div className="bg-white p-8 rounded-3xl shadow-2xl relative border border-gray-100">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-pink-100 text-pink-600 rounded-2xl shadow-sm"><Users size={32} /></div>
+          <div>
+            <h2 className="text-3xl font-extrabold text-gray-800">Manajemen Karyawan</h2>
+            <p className="text-gray-500 font-medium">Isi kehadiran untuk menutup laporan harian</p>
+          </div>
+        </div>
+
+        <div className="space-y-4 mb-8">
+          {employees.map((emp, index) => (
+            <div key={`emp-${emp.id}-${index}`} className="flex flex-col sm:flex-row items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-200 hover:border-pink-300 hover:shadow-md transition-all gap-4">
+              <div className="flex items-center gap-4 w-full sm:w-auto">
+                <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-xl shadow-inner shrink-0 ${emp.attendance === 'hadir' ? 'bg-green-500 text-white' : emp.attendance === 'absen' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                  {emp.name.charAt(0)}
+                </div>
+                <div>
+                  <h3 className="font-bold text-xl text-gray-800">{emp.name}</h3>
+                  <p className={`text-sm font-semibold ${emp.attendance === 'hadir' ? 'text-green-500' : emp.attendance === 'absen' ? 'text-red-500' : 'text-gray-400'}`}>
+                    {emp.attendance === 'hadir' ? 'Hadir & Dihitung' : emp.attendance === 'absen' ? 'Absen (Tidak Dihitung)' : 'Belum Absen'}
+                  </p>
+                </div>
+              </div>
+              
+              <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto sm:justify-end">
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-gray-300 shadow-sm focus-within:border-pink-400">
+                  <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Kasbon: Rp</span>
+                  <input 
+                    type="number" 
+                    value={emp.kasbon || ''} 
+                    onChange={(e) => handleKasbonChange(emp.id, e.target.value)} 
+                    className="w-20 outline-none font-black text-gray-800 bg-transparent text-right"
+                    placeholder="0"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => handleAttendanceChange(emp.id, 'hadir')}
+                    className={`px-4 py-2 rounded-xl font-bold text-sm transition-all ${emp.attendance === 'hadir' ? 'bg-green-500 text-white shadow-md scale-105' : 'bg-white text-gray-500 hover:bg-green-50 hover:text-green-600 border border-gray-200'}`}
+                  >
+                    Hadir
+                  </button>
+                  <button 
+                    onClick={() => handleAttendanceChange(emp.id, 'absen')}
+                    className={`px-4 py-2 rounded-xl font-bold text-sm transition-all ${emp.attendance === 'absen' ? 'bg-red-500 text-white shadow-md scale-105' : 'bg-white text-gray-500 hover:bg-red-50 hover:text-red-600 border border-gray-200'}`}
+                  >
+                    Absen
+                  </button>
+                </div>
+
+                {userRole === 'admin' && (
+                  <div className="flex gap-2 ml-2 pl-2 border-l border-gray-200">
+                    <button onClick={() => { setEditingEmp(emp); setIsEmpModalOpen(true); }} className="p-2 text-blue-500 hover:bg-blue-100 rounded-lg"><Edit2 size={18} /></button>
+                    <button onClick={() => setConfirmDialog({ show: true, message: `Hapus data karyawan ${emp.name}?`, onConfirm: () => handleDeleteEmp(emp.id) })} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={18} /></button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+          {userRole === 'admin' && (
+            <button onClick={() => { setEditingEmp({ name: '' }); setIsEmpModalOpen(true); }} className="w-full mt-4 py-4 border-2 border-dashed border-gray-300 rounded-2xl text-gray-500 font-bold hover:text-pink-500 hover:border-pink-500 hover:bg-pink-50 transition-all flex items-center justify-center gap-2">
+              <PlusCircle size={20} /> Tambah Karyawan Baru
+            </button>
+          )}
+        </div>
+
+        <div className="bg-pink-50 rounded-2xl p-6 border-2 border-pink-200 text-center mb-8">
+          <p className="text-pink-600 font-semibold mb-2">Total Estimasi Beban Gaji (Dikurangi Kasbon)</p>
+          <h2 className="text-4xl font-black text-pink-700">Rp {totalSalary.toLocaleString('id-ID')}</h2>
+        </div>
+
+        {/* Tombol Simpan di Tab HR */}
+        <SaveButton />
+      </div>
+    </div>
+  );
+
+  const renderReports = () => {
+    const dateStr = new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    
+    return (
+      <div className="max-w-4xl mx-auto animate-fade-in pb-24 lg:pb-0">
+        <div className="flex justify-end mb-4 no-print relative z-20">
+          <button type="button" onClick={handlePrint} className="bg-gray-800 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-700 transition-colors shadow-lg cursor-pointer active:scale-95">
+            <Printer size={20}/> Cetak Dokumen Laporan
+          </button>
+        </div>
+        
+        {/* --- AREA PRINTABLE (LAPORAN PROFESIONAL) --- */}
+        <div id="print-area" className="bg-white p-8 md:p-12 rounded-3xl shadow-2xl border border-gray-200">
+          <div className="text-center mb-10 border-b-4 border-gray-800 pb-6">
+            <h1 className="text-3xl md:text-4xl font-black uppercase tracking-widest text-gray-900 mb-2">Laporan Laba Rugi</h1>
+            <h2 className="text-xl font-bold text-gray-600">Sticky Point Branch</h2>
+            <p className="text-sm mt-2 text-gray-500 italic font-medium">Tanggal Periode: {dateStr}</p>
+          </div>
+
+          <div className="space-y-8 text-gray-800">
+            {/* 1. Pendapatan */}
+            <div>
+              <h3 className="font-bold text-xl bg-gray-100 p-3 uppercase border-l-4 border-gray-800 rounded-r-lg">1. Pendapatan (Revenue)</h3>
+              <div className="flex justify-between py-3 border-b border-dotted border-gray-300 ml-4 mt-2 text-lg">
+                <span>Penjualan Kotor (Omset Harian)</span>
+                <span className="font-semibold">Rp {valOmset.toLocaleString('id-ID')}</span>
+              </div>
+              <div className="flex justify-between py-3 ml-4 font-black text-xl text-green-700 bg-green-50 mt-2 px-4 rounded-lg">
+                <span>Total Pendapatan</span>
+                <span>Rp {valOmset.toLocaleString('id-ID')}</span>
+              </div>
+            </div>
+
+            {/* 2. Pengeluaran */}
+            <div>
+              <h3 className="font-bold text-xl bg-gray-100 p-3 uppercase border-l-4 border-gray-800 rounded-r-lg">2. Beban & Pengeluaran (Expenses)</h3>
+              <div className="flex justify-between py-3 border-b border-dotted border-gray-300 ml-4 mt-2 text-lg">
+                <span>HPP / Belanja Bahan Baku Pokok</span>
+                <span className="font-medium">Rp {valHpp.toLocaleString('id-ID')}</span>
+              </div>
+              <div className="flex justify-between py-3 border-b border-dotted border-gray-300 ml-4 text-lg">
+                <span>Beban Gaji Karyawan <span className="text-sm font-normal text-gray-500">(Netto setelah kasbon)</span></span>
+                <span className="font-medium">Rp {totalSalary.toLocaleString('id-ID')}</span>
+              </div>
+              <div className="flex justify-between py-3 border-b border-dotted border-gray-300 ml-4 text-lg">
+                <span>Kasbon Karyawan <span className="text-sm font-normal text-gray-500">(Dikembalikan ke kas)</span></span>
+                <span className="font-medium">Rp {totalKasbon.toLocaleString('id-ID')}</span>
+              </div>
+              <div className="flex justify-between py-3 border-b border-dotted border-gray-300 ml-4 text-lg">
+                <span className="flex-1">Pengeluaran Lain-lain {keteranganLain && <span className="block text-sm italic text-gray-500 mt-1">Ket: {keteranganLain}</span>}</span>
+                <span className="font-medium">Rp {valLain.toLocaleString('id-ID')}</span>
+              </div>
+              <div className="flex justify-between py-3 ml-4 font-black text-xl text-red-700 border-t-2 border-gray-800 mt-2 px-4 bg-red-50 rounded-lg">
+                <span>Total Pengeluaran</span>
+                <span>( Rp {totalPengeluaran.toLocaleString('id-ID')} )</span>
+              </div>
+            </div>
+
+            {/* 3. Laba Bersih */}
+            <div className="pt-6">
+              <div className={`flex justify-between items-center p-6 border-2 rounded-xl shadow-inner ${netProfit >= 0 ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50'}`}>
+                <span className="text-2xl font-black uppercase tracking-wide">Laba Bersih (Net Profit)</span>
+                <span className={`text-3xl font-black ${netProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                  {netProfit >= 0 ? '' : '- '} Rp {Math.abs(netProfit).toLocaleString('id-ID')}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Kolom Tanda Tangan */}
+          <div className="mt-20 flex justify-between px-10">
+            <div className="text-center w-48">
+              <p className="mb-20 text-gray-600 font-medium">Diperiksa Oleh,</p>
+              <p className="font-bold border-b border-gray-800 pb-2">Owner / Supervisor</p>
+            </div>
+            <div className="text-center w-48">
+              <p className="mb-20 text-gray-600 font-medium">Dilaporkan Oleh,</p>
+              <p className="font-bold border-b border-gray-800 pb-2">Kasir / Admin</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Tombol Simpan di Tab Laporan */}
+        <SaveButton />
+      </div>
+    );
+  };
+
+  // === MAIN RENDER GUARD ===
+  if (!isLoggedIn) return renderLogin();
+
+  return (
+    <div className="h-screen flex flex-col bg-gray-50 font-sans overflow-hidden">
+      <style dangerouslySetInnerHTML={{__html: `
+        @media print {
+          @page { size: auto; margin: 15mm; }
+          html, body, #root, .h-screen { 
+            height: auto !important; 
+            overflow: visible !important; 
+            background-color: white !important; 
+          }
+          body * { visibility: hidden; }
+          #print-area, #print-area * { visibility: visible; }
+          #print-area { 
+            position: absolute; 
+            left: 0; 
+            top: 0; 
+            width: 100%; 
+            box-shadow: none !important; 
+            border: none !important; 
+            padding: 0 !important;
+            margin: 0 !important;
+          }
+          .no-print { display: none !important; }
+          
+          /* Memaksa warna background tercetak di kertas */
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
+          }
+        }
+        @keyframes gradient-x { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+        .animate-gradient-x { background-size: 200% 200%; animation: gradient-x 3s ease infinite; }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-bounce-in { animation: bounceIn 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55); }
+        @keyframes bounceIn { 0% { transform: scale(0.5); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+        .custom-scrollbar::-webkit-scrollbar { width: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(0,0,0,0.15); border-radius: 20px; }
+      `}} />
+
+      <header className="bg-white shadow-sm border-b border-gray-200 z-40 shrink-0 no-print">
+        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-600 p-2 rounded-lg"><Coffee size={24} className="text-white" /></div>
+            <h1 className="text-xl font-black text-gray-800">Sticky Point</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <nav className="hidden lg:flex gap-2">
+              {visibleTabs.map((tab, index) => (
+                <button type="button" key={`desk-tab-${tab.id}-${index}`} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold transition-all duration-300 ${activeTab === tab.id ? 'bg-blue-100 text-blue-700 shadow-sm' : 'text-gray-500 hover:bg-gray-100'}`}>
+                  <tab.icon size={18} /> {tab.label}
+                </button>
+              ))}
+            </nav>
+            <button onClick={handleLogout} className="p-2 text-gray-400 hover:bg-red-50 hover:text-red-500 rounded-xl transition-all"><LogOut size={20} /></button>
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-y-auto w-full bg-gray-100">
+        <div className="container mx-auto px-4 py-8 h-full custom-scrollbar">
+          {activeTab === 'dashboard' && renderDashboard()}
+          {activeTab === 'input' && renderInputKeuangan()}
+          {activeTab === 'inventory' && renderInventory()}
+          {activeTab === 'hr' && userRole === 'admin' && renderHR()}
+          {activeTab === 'reports' && userRole === 'admin' && renderReports()}
+        </div>
+      </main>
+
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50 flex justify-around p-2 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] no-print">
+        {visibleTabs.map((tab, index) => (
+          <button type="button" key={`mob-tab-${tab.id}-${index}`} onClick={() => setActiveTab(tab.id)} className={`p-2 flex-1 flex flex-col items-center gap-1 rounded-xl mx-1 transition-colors ${activeTab === tab.id ? 'bg-blue-50 text-blue-700 font-bold' : 'text-gray-400 hover:bg-gray-50'}`}>
+            <tab.icon size={22} className={activeTab === tab.id ? 'animate-bounce' : ''} style={{ animationDuration: '2s' }} />
+            <span className="text-[10px] leading-tight mt-1">{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      {/* --- MODAL EDIT/TAMBAH KARYAWAN --- */}
+      {isEmpModalOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 no-print">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 animate-bounce-in">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">{editingEmp?.id ? 'Edit Karyawan' : 'Tambah Karyawan'}</h2>
+            <form onSubmit={handleSaveEmp} className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Nama Karyawan</label>
+                <input required type="text" value={editingEmp?.name || ''} onChange={(e) => setEditingEmp({...editingEmp, name: e.target.value})} className="w-full p-3 border-2 border-gray-200 rounded-xl" />
+              </div>
+              <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+                <button type="button" onClick={() => setIsEmpModalOpen(false)} className="px-4 py-2 font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 rounded-xl">Batal</button>
+                <button type="submit" className="px-6 py-2 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl">Simpan</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL TAMBAH CUP --- */}
+      {isCupModalOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 no-print">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 animate-bounce-in">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Tambah Ukuran Cup</h2>
+            <form onSubmit={handleAddCupSize} className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Nama / Ukuran Cup</label>
+                <input required type="text" value={newCupSize} onChange={(e) => setNewCupSize(e.target.value)} className="w-full p-3 border-2 border-gray-200 rounded-xl outline-none" placeholder="Misal: 250ml atau Cup Kecil" />
+              </div>
+              <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+                <button type="button" onClick={() => setIsCupModalOpen(false)} className="px-4 py-2 font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 rounded-xl">Batal</button>
+                <button type="submit" className="px-6 py-2 font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-xl">Tambah Cup</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- CUSTOM CONFIRM DIALOG --- */}
+      {confirmDialog.show && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center backdrop-blur-sm p-4 no-print">
+          <div className="bg-white p-6 rounded-3xl shadow-2xl max-w-sm w-full text-center animate-bounce-in">
+            <AlertTriangle size={56} className="text-red-500 mx-auto mb-4" />
+            <h3 className="text-xl font-extrabold mb-6 text-gray-800">{confirmDialog.message}</h3>
+            <div className="flex gap-4 justify-center">
+              <button onClick={() => setConfirmDialog({show:false})} className="flex-1 py-3 bg-gray-200 text-gray-800 rounded-xl font-bold hover:bg-gray-300">Batal</button>
+              <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog({show:false}); }} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600">Yakin, Hapus!</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Toast */}
+      {notification.show && (
+        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[80] animate-bounce-in no-print">
+          <div className={`px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 font-bold text-lg border-2 bg-white ${notification.type === 'success' ? 'text-green-600 border-green-400' : notification.type === 'warning' ? 'text-orange-600 border-orange-400' : 'text-red-600 border-red-400'}`}>
+            {notification.type === 'success' ? <CheckCircle2 size={28} /> : <AlertTriangle size={28} />} {notification.message}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
